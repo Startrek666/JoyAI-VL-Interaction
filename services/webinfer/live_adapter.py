@@ -110,6 +110,25 @@ Choose this when you observe something worth reporting or a significant state ch
 **Delegate** — when a question is too hard or error-prone to answer reliably yourself, speak a brief note that you're delegating, then hand the question to the background solver:
 </response> Brief note that you're delegating. </delegation> <the question>""".strip()
 
+DEFAULT_SYSTEM_PROMPT_ZH = """你是 Lemos 的实时视频通话助手，正在逐帧观察摄像头画面。最后一帧是当前时刻。
+## 动作格式
+每一步必须且只能选下面三种动作之一：
+**保持沉默** — 只输出：
+</silence>
+场景没有值得说的变化、没有待回答的用户问题、或没有有用的话时选这个。
+**说话** — 先写标记，再写简短回复：
+</response> 你的回复。
+看到值得告知的变化，或能根据画面/字幕回答用户时选这个。用用户的语言（默认中文）。口语、一两句，不要 Markdown，不要编号。
+**请办事** — 自己搞不定或容易答错时，先说一句你要去办，再把问题交给后台唯一能办事的人：
+</response> 简短说明你去办。 </delegation> <要办的问题>
+不要点名具体工具或 Agent。后台会派工。
+## 重要
+- 不要转写用户说话内容（字幕会另给）。
+- 用户当前问题在「用户问题」段落；声学观察若有，只作背景，不要当新问题。
+- 若服务器状态提示有待确认任务，根据用户这句话和画面决定是否 </delegation>。
+- 没有用户问题时，可以主动观察画面变化，但不要反复说同一件事。
+""".strip()
+
 DEFAULT_SYSTEM_PROMPT_NO_DELEGATION = """You are a real-time video streaming assistant observing a continuous camera feed frame by frame. The last frame represents the current moment.
 ## Action Format
 At every inference step you MUST choose exactly one of the following two actions:
@@ -124,11 +143,20 @@ Choose this when you observe something worth reporting or a significant state ch
 There is NO delegation action. NEVER output </delegation> or hand off questions to any background solver.""".strip()
 
 SYSTEM_PROMPT_DEFAULT_KEY = "DEFAULT_SYSTEM_PROMPT_EN"
+SYSTEM_PROMPT_ZH_KEY = "DEFAULT_SYSTEM_PROMPT_ZH"
 SYSTEM_PROMPT_NO_DELEGATION_KEY = "DEFAULT_SYSTEM_PROMPT_NO_DELEGATION"
 SYSTEM_PROMPT_OPTIONS = {
     SYSTEM_PROMPT_DEFAULT_KEY: DEFAULT_SYSTEM_PROMPT_EN,
+    SYSTEM_PROMPT_ZH_KEY: DEFAULT_SYSTEM_PROMPT_ZH,
     SYSTEM_PROMPT_NO_DELEGATION_KEY: DEFAULT_SYSTEM_PROMPT_NO_DELEGATION,
 }
+
+
+def _system_prompt_for_language(language: str, system_prompt: str) -> str:
+    """--language zh 时，若仍是英文默认 prompt，改用中文。显式 SYSTEM_PROMPT（含空字符串禁用）保持原样。"""
+    if language == "zh" and system_prompt == DEFAULT_SYSTEM_PROMPT_EN:
+        return DEFAULT_SYSTEM_PROMPT_ZH
+    return system_prompt
 
 
 
@@ -657,6 +685,7 @@ class StreamingInferAdapter:
                 long_term_repetition_penalty=config.long_term_repetition_penalty,
                 long_term_presence_penalty=config.long_term_presence_penalty,
                 debug=config.summarizer_debug,
+                api_key=os.environ.get("SUMMARIZER_API_KEY") or config.api_key,
             )
         if config.out_dir:
             Path(config.out_dir).mkdir(parents=True, exist_ok=True)
@@ -781,6 +810,53 @@ class StreamingInferAdapter:
             await self._flush_session_outputs(removed_state)
         removed = removed_state is not None
         return web.json_response({"ok": True, "session_id": session_id, "removed": removed})
+
+    async def handle_clear_query(self, request: web.Request) -> web.Response:
+        """只撕当前问题便利贴，不清三层记忆。"""
+        payload = await _read_json(request)
+        session_id = _safe_session_id(_request_session_id(request, payload))
+        state = self.sessions.get(session_id)
+        if state is None:
+            return web.json_response({"ok": True, "session_id": session_id, "cleared": False})
+        async with state.lock:
+            if state.current_query_text:
+                state._pending_qa_archive = (state.current_query_text, state.query_start_time)
+                self._execute_pending_qa_archive(state)
+            state.current_query_text = None
+            state.query_start_time = None
+            state.query_in_current_chunk = False
+        return web.json_response({"ok": True, "session_id": session_id, "cleared": True})
+
+    async def handle_inject_handoff(self, request: web.Request) -> web.Response:
+        """把办事摘要写入问答历史和当前段对话，并撕便利贴，避免同一题反复 delegation。"""
+        payload = await _read_json(request)
+        session_id = _safe_session_id(_request_session_id(request, payload))
+        summary = str(payload.get("summary") or "").strip()
+        query = str(payload.get("query") or "").strip()
+        state = self.sessions.get(session_id)
+        if state is None or not summary:
+            return web.json_response({"ok": True, "session_id": session_id, "injected": False})
+        async with state.lock:
+            time_range = self._time_range_for_frame(max(1, state.frame_count))
+            original_query = query or (state.current_query_text or "").strip() or "办事"
+            state.memory_state.setdefault("qa_history", []).append(
+                {
+                    "query_time": time_range,
+                    "query": original_query[:500],
+                    "responses": [(time_range, summary[:800])],
+                    # 官方过滤是 archived_in_chunk < 当前 chunk，减 1 才能在本段立刻可见。
+                    "archived_in_chunk": max(0, state.chunk_index - 1),
+                }
+            )
+            note = f"[办事结果，请记住，不要再重复派同一件事]\n{summary[:400]}"
+            state.current_chunk["messages"].append({"role": "user", "content": note})
+            state.current_chunk["messages"].append({"role": "assistant", "content": "</silence>"})
+            # 摘要已经作为完整问答写入历史，不要再把半截确认句归档成另一条。
+            state._pending_qa_archive = None
+            state.current_query_text = None
+            state.query_start_time = None
+            state.query_in_current_chunk = False
+        return web.json_response({"ok": True, "session_id": session_id, "injected": True})
 
     async def handle_chat_completions(self, request: web.Request) -> web.Response:
         payload = await _read_json(request)
@@ -1650,8 +1726,12 @@ class StreamingInferAdapter:
 
         extra_body["top_k"] = self.config.main_top_k
         extra_body["repetition_penalty"] = self.config.main_repetition_penalty
+        max_tokens = self.config.main_max_tokens
+        inbound_max = inbound_payload.get("max_tokens")
+        if isinstance(inbound_max, int) and 1 <= inbound_max <= 512:
+            max_tokens = inbound_max
         return {
-            "max_tokens": self.config.main_max_tokens,
+            "max_tokens": max_tokens,
             "temperature": self.config.main_temperature,
             "top_p": self.config.main_top_p,
             "presence_penalty": self.config.main_presence_penalty,
@@ -2722,7 +2802,7 @@ def parse_args() -> AdapterConfig:
         summarizer_debug=not args.no_summarizer_debug,
         frame_save_dir=args.frame_save_dir,
         language=args.language,
-        system_prompt=args.system_prompt,
+        system_prompt=_system_prompt_for_language(args.language, args.system_prompt),
     )
 
 
@@ -2737,6 +2817,8 @@ def create_app(config: AdapterConfig) -> web.Application:
     app.router.add_get("/v1/models", adapter.handle_models)
     app.router.add_post("/v1/chat/completions", adapter.handle_chat_completions)
     app.router.add_post("/v1/streaming/reset", adapter.handle_reset)
+    app.router.add_post("/v1/streaming/clear_query", adapter.handle_clear_query)
+    app.router.add_post("/v1/streaming/inject_handoff", adapter.handle_inject_handoff)
     return app
 
 

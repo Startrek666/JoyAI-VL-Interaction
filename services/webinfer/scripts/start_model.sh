@@ -15,6 +15,7 @@ DATA_PARALLEL_SIZE_LOCAL="${DATA_PARALLEL_SIZE_LOCAL:-${DATA_PARALLEL_SIZE}}"
 MODEL_PATH="${MODEL_PATH:-/tmp/models/jdopensource/JoyAI-VL-Interaction}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-jdopensource/JoyAI-VL-Interaction}"
 MAIN_MODEL_PORT="${MAIN_MODEL_PORT:-7060}"
+MAIN_MODEL_HOST="${MAIN_MODEL_HOST:-127.0.0.1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 MAIN_GPU_MEMORY_UTILIZATION="${MAIN_GPU_MEMORY_UTILIZATION:-0.9}"
 LINEAR_BACKEND="${LINEAR_BACKEND:-auto}"
@@ -46,6 +47,7 @@ echo "Starting Main VLM Model (vLLM OpenAI API Server)"
 echo "  Model: ${MODEL_PATH}"
 echo "  Served model name: ${SERVED_MODEL_NAME}"
 echo "  Port:  ${MAIN_MODEL_PORT}"
+echo "  Host:  ${MAIN_MODEL_HOST}"
 echo "  GPU:   ${MAIN_GPU}"
 echo "  Tensor parallel size: ${TENSOR_PARALLEL_SIZE}"
 echo "  Data parallel size: ${DATA_PARALLEL_SIZE}"
@@ -71,6 +73,7 @@ trap cleanup INT TERM
 CUDA_VISIBLE_DEVICES="${MAIN_GPU}" "${PYTHON_BIN}" -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_PATH}" \
     --served-model-name "${SERVED_MODEL_NAME}" \
+    --host "${MAIN_MODEL_HOST}" \
     --port "${MAIN_MODEL_PORT}" \
     --gpu-memory-utilization "${MAIN_GPU_MEMORY_UTILIZATION}" \
     --max-model-len "${MAX_MODEL_LEN}" \

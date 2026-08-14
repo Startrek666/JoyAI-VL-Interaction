@@ -308,6 +308,7 @@ class SummarizerModel:
         long_term_repetition_penalty: float = 1.0,
         long_term_presence_penalty: float = 0.0,
         debug: bool = False,
+        api_key: str | None = None,
     ):
         self.model_name = model_name
         self.longterm_model_name = longterm_model_name or model_name
@@ -330,16 +331,21 @@ class SummarizerModel:
         self.long_term_presence_penalty = long_term_presence_penalty
         self.debug = debug
 
+        key = (
+            (api_key or os.environ.get("SUMMARIZER_API_KEY") or os.environ.get("MODEL_API_KEY") or "EMPTY")
+            .strip()
+            or "EMPTY"
+        )
         # 中期摘要客户端（多模态，带图片）
         self._client = OpenAI(
-            api_key="EMPTY",
+            api_key=key,
             base_url=api_base,
         )
 
         # 长期压缩客户端（纯文本）—— 如果未指定则复用中期客户端
         if longterm_api_base and longterm_api_base != api_base:
             self._longterm_client = OpenAI(
-                api_key="EMPTY",
+                api_key=key,
                 base_url=longterm_api_base,
             )
         else:
