@@ -98,6 +98,26 @@ x-streaming-session: <sessionId>
 
 也支持 `file:///absolute/path.jpg`，但必须配置 `ALLOWED_LOCAL_IMAGE_ROOTS`，并且文件必须位于允许目录下。更完整的前端请求示例见 `deploy.md`。
 
+### 运动观察通道（`observation` 字段）
+
+`POST /v1/chat/completions` 支持可选的顶层 `observation` 字符串字段（也兼容 `extra_body.observation`），供 Lemos 把浏览器端骨架测量得到的运动观察随帧传入：
+
+- 观察文本只在与该 session 上一帧不同时，才以 `[动作观察]\n{内容}` 文本块追加到当前帧 user message 的图片之后；相同不重复追加，空字符串用于复位去重记录。
+- 不进入 `current_query_text`，不写问答历史，不参与动态 system prompt——它不是用户提问。
+- 上限 800 字符，超出截断；`/v1/streaming/reset` 与 `/v1/streaming/clear_query` 会复位观察去重状态。
+- 字段完全可选，旧调用方不传时行为不变；中文 system prompt（`DEFAULT_SYSTEM_PROMPT_ZH`）内含配套的运动指导规则。
+
+部署更新（在 GPU 机上执行）：
+
+```bash
+cd /data/nvme/src/JoyAI-VL-Interaction
+git pull origin lemos-patches
+# 按现有方式重启 adapter，例如 systemctl restart joyai-adapter，
+# 或 scripts/stop.sh 之后重新 bash scripts/run.sh adapter
+```
+
+回滚：切回旧提交并按同样方式重启即可。字段可选，回滚后 Lemos 只是传不进观察，其余功能不受影响。
+
 ## 推理和记忆流程
 
 1. 适配器从请求中提取 session、model、messages、images 和 timestamps。

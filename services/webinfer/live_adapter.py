@@ -127,6 +127,15 @@ DEFAULT_SYSTEM_PROMPT_ZH = """你是 Lemos 的实时视频通话助手，正在�
 - 用户当前问题在「用户问题」段落；声学观察若有，只作背景，不要当新问题。
 - 若服务器状态提示有待确认任务，根据用户这句话和画面决定是否 </delegation>。
 - 没有用户问题时，可以主动观察画面变化，但不要反复说同一件事。
+- 用户要求开关运动模式、计数或报数时，系统会自动执行：你只需简短回应一句，不要说做不到，也不要自己逐个报数。
+## 运动模式（仅当消息里出现「[动作观察]」时适用）
+- [动作观察] 由骨架测量得出，是关节角度、次数、时长、左右差等数字的唯一来源。说具体数字时只能照抄其中的数字，不得自己估计；没给出的数字只用"偏大""不太够"这类说法。
+- 不要说厘米、公分等绝对长度。
+- 「不可评估」列出的项目当前机位看不到，不要下结论，需要时提醒用户换个角度，例如"侧过来一点我看看腰背"。
+- 动作名称：[动作观察] 给出「动作」时直接用这个名称；常见健身动作可以直接说；舞蹈只说大类（如街舞、爵士、民族舞），并用"看起来像"留余地；不要说具体舞蹈动作术语，改为描述身体在做什么。
+- 「已提醒」列出的问题系统刚用语音提醒过，短时间内不要重复。
+- 指导要具体可执行，一次只说一两点，先说事实再给建议，口语化。没有值得说的新变化时保持沉默，不要每秒都点评。
+- 以下情况交给后台细看动作：[动作观察] 没给出「动作」或把握偏低、你从画面也认不准用户在做什么；动作复杂（舞蹈、组合动作、快速连贯的动作）；用户想要复盘、专业、详细或逐项的评估；或你对动作好坏没有把握。此时先用 [动作观察] 里的事实简短说一句，再 </delegation> 交给后台细看，问题里写清用户想知道什么、你哪里没把握。
 """.strip()
 
 DEFAULT_SYSTEM_PROMPT_NO_DELEGATION = """You are a real-time video streaming assistant observing a continuous camera feed frame by frame. The last frame represents the current moment.
@@ -612,6 +621,7 @@ class SessionState:
     current_query_text: Optional[str] = None
     query_start_time: Optional[str] = None
     query_in_current_chunk: bool = False
+    last_observation: Optional[str] = None
     mid_term_summaries: list[dict[str, Any]] = field(default_factory=list)
     mid_term_history: list[dict[str, Any]] = field(default_factory=list)
     long_term_history: list[dict[str, Any]] = field(default_factory=list)
@@ -825,6 +835,7 @@ class StreamingInferAdapter:
             state.current_query_text = None
             state.query_start_time = None
             state.query_in_current_chunk = False
+            state.last_observation = None
         return web.json_response({"ok": True, "session_id": session_id, "cleared": True})
 
     async def handle_inject_handoff(self, request: web.Request) -> web.Response:
@@ -856,6 +867,7 @@ class StreamingInferAdapter:
             state.current_query_text = None
             state.query_start_time = None
             state.query_in_current_chunk = False
+            state.last_observation = None
         return web.json_response({"ok": True, "session_id": session_id, "injected": True})
 
     async def handle_chat_completions(self, request: web.Request) -> web.Response:
@@ -1268,10 +1280,12 @@ class StreamingInferAdapter:
         state.turn_count += 1
         state.current_chunk["turn_count"] += 1
 
+        observation_text = _next_observation(state, _extract_observation(payload))
         user_message = self._build_internal_user_message(
             time_ranges=time_ranges,
             image_paths=[str(ip) for ip in image_paths],
             query_text=query_text,
+            observation_text=observation_text,
         )
         state.current_chunk["messages"].append(user_message)
         if self._async_summary_enabled():
@@ -1293,6 +1307,7 @@ class StreamingInferAdapter:
             "num_chunk_frames": state.current_chunk["frame_count"],
             "image_paths": list(state.current_chunk["image_paths"]),
             "frame_time_ranges": list(state.current_chunk["frame_time_ranges"]),
+            "observation": observation_text,
         }
         is_forced_silence = (
             self.config.force_silence_before_query and not state.current_query_text
@@ -1577,6 +1592,7 @@ class StreamingInferAdapter:
         *,
         time_ranges=None,
         image_paths=None,
+        observation_text: Optional[str] = None,
     ) -> dict[str, Any]:
         i18n = _get_i18n(self.config.language)
         if time_ranges is None:
@@ -1597,6 +1613,8 @@ class StreamingInferAdapter:
                     "max_pixels": self.config.max_pixels,
                 }
             )
+        if observation_text:
+            content.append({"type": "text", "text": "[动作观察]\n" + observation_text})
         return {"role": "user", "content": content}
 
     def _build_main_internal_messages(
@@ -2319,6 +2337,31 @@ def _extract_extra_body(payload: dict[str, Any]) -> dict[str, Any]:
         "include_stop_str_in_output",
     )
     return {key: payload[key] for key in keys if key in payload}
+
+
+def _extract_observation(payload: dict[str, Any]) -> str:
+    """提取 Lemos 随帧附带的动作观察文本：优先顶层 observation 字段，其次 extra_body.observation。"""
+    raw = payload.get("observation")
+    if not isinstance(raw, str):
+        raw = _extract_extra_body(payload).get("observation")
+    if not isinstance(raw, str):
+        extra_body = payload.get("extra_body")
+        raw = extra_body.get("observation") if isinstance(extra_body, dict) else None
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()[:800]
+
+
+def _next_observation(state: SessionState, obs: str) -> Optional[str]:
+    """决定本帧是否把动作观察追加到 user message：仅当内容与上一帧不同才返回新文本。"""
+    if not obs:
+        # 观察被清空时重置记录，重新开启后能再次注入
+        state.last_observation = None
+        return None
+    if obs == state.last_observation:
+        return None
+    state.last_observation = obs
+    return obs
 
 
 def _chat_completion_response(

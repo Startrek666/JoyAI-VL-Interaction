@@ -98,6 +98,16 @@ Recommended image input format is the OpenAI format:
 
 `file:///absolute/path.jpg` is also supported, but `ALLOWED_LOCAL_IMAGE_ROOTS` must be configured and the file must be under an allowed directory. See `deploy.md` for a fuller frontend request example.
 
+### Motion observation channel (`observation` field)
+
+`POST /v1/chat/completions` accepts an optional top-level `observation` string (or `extra_body.observation`) so callers like Lemos can attach per-frame motion observations:
+
+- The text is appended to the current frame's user message — after the images — as `[动作观察]\n{content}` only when it differs from the previous frame; an empty string resets the dedup record.
+- It never enters `current_query_text`, Q&A history, or the dynamic system prompt.
+- Truncated to 800 chars; `reset` / `clear_query` also reset the dedup state. Fully optional — omitting it keeps the previous behavior.
+
+Deploy update on the GPU host: `git pull origin lemos-patches`, then restart the adapter (`systemctl restart joyai-adapter` or `scripts/stop.sh` + `scripts/run.sh adapter`).
+
 ## Inference and Memory Flow
 
 1. The adapter extracts the session, model, messages, images, and timestamps from the request.
