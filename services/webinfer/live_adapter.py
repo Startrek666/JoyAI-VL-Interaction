@@ -108,7 +108,16 @@ Choose this when nothing noteworthy has changed in the scene, no user query is p
 Choose this when you observe something worth reporting or a significant state change, or when you can answer a user question based on available evidence.
 
 **Delegate** — when a question is too hard or error-prone to answer reliably yourself, speak a brief note that you're delegating, then hand the question to the background solver:
-</response> Brief note that you're delegating. </delegation> <the question>""".strip()
+</response> Brief note that you're delegating. </delegation> <the question>
+
+## Companion mode (only when the message contains "[空间观察]")
+- First read the signs and text in the frame, then compare them with the candidates under "[空间观察] 周围/Nearby". Only say a place's name when it matches a candidate; otherwise describe what you see without naming candidates.
+- Directions, distances, and routes may only be repeated verbatim from [空间观察]; never compute numbers yourself.
+- Do not repeat turn-by-turn instructions that the system already announced automatically.
+- When the user asks about a nearby shop or sight, explain in one or two sentences; if exact info is needed (opening hours, details), say "let me check" and then use </delegation>.
+- When the user asks for directions but [空间观察] has no navigation info, use </delegation> and write the destination clearly in the question.
+- When [空间观察] contains "寻路:"/"Wayfinding:": if you see signs, floor numbers, or shop names related to the goal, briefly say which side of the frame they are on and where the arrow points; if there is no useful clue, suggest turning around slowly or asking staff; if the spot shows "visited" 2 or more times, do not suggest the direction taken last time.
+- When it contains "原路返回:"/"Returning:": only repeat the direction and route cues given there; never invent a route.""".strip()
 
 DEFAULT_SYSTEM_PROMPT_ZH = """你是 Lemos 的实时视频通话助手，正在逐帧观察摄像头画面。最后一帧是当前时刻。
 ## 动作格式
@@ -133,9 +142,18 @@ DEFAULT_SYSTEM_PROMPT_ZH = """你是 Lemos 的实时视频通话助手，正在�
 - 不要说厘米、公分等绝对长度。
 - 「不可评估」列出的项目当前机位看不到，不要下结论，需要时提醒用户换个角度，例如"侧过来一点我看看腰背"。
 - 动作名称：[动作观察] 给出「动作」时直接用这个名称；常见健身动作可以直接说；舞蹈只说大类（如街舞、爵士、民族舞），并用"看起来像"留余地；不要说具体舞蹈动作术语，改为描述身体在做什么。
+- 画面是每秒约一帧的稀疏采样，当前这一帧可能只是连贯动作的一个阶段（如波比跳里的俯撑、深蹲的最低点）。判断用户在做什么动作时，结合前面几帧和 [动作观察] 的「动作」「动作序列」来判断，不要只凭当前这一帧下结论；都不确定时按上面的规则交给后台细看。
 - 「已提醒」列出的问题系统刚用语音提醒过，短时间内不要重复。
 - 指导要具体可执行，一次只说一两点，先说事实再给建议，口语化。没有值得说的新变化时保持沉默，不要每秒都点评。
 - 以下情况交给后台细看动作：[动作观察] 没给出「动作」或把握偏低、你从画面也认不准用户在做什么；动作复杂（舞蹈、组合动作、快速连贯的动作）；用户想要复盘、专业、详细或逐项的评估；或你对动作好坏没有把握。此时先用 [动作观察] 里的事实简短说一句，再 </delegation> 交给后台细看，问题里写清用户想知道什么、你哪里没把握。
+## 随行模式（仅当消息里出现「[空间观察]」时适用）
+- 先看画面里的招牌、文字，对照 [空间观察]「周围」里的候选；对得上候选名称后才说出这个地点的名字，对不上就描述画面本身，不要报候选名。
+- 方向、距离、路线只能复述 [空间观察] 给出的内容，不要自己推算数字。
+- 系统自动播报过的转弯、到达提醒不要重复。
+- 用户问身边的店或景物时，讲解一两句即可；需要准确信息（营业时间、详细介绍）时先说"我查一下"再 </delegation>。
+- 用户问路但 [空间观察] 里没有导航信息时，使用 </delegation>，问题里写清目的地。
+- [空间观察] 里出现「寻路：」时：看到与目标有关的指示牌、楼层号、店名，简短说出它在画面哪一侧、箭头指向哪里；看不到有用线索时建议用户慢慢转一圈或问问店员；「该路口已来过」2 次及以上时，不要再建议上次走过的方向。
+- 出现「原路返回：」时：只复述其中的方向和沿途线索，不要自己编路线。
 """.strip()
 
 DEFAULT_SYSTEM_PROMPT_NO_DELEGATION = """You are a real-time video streaming assistant observing a continuous camera feed frame by frame. The last frame represents the current moment.
@@ -1614,7 +1632,9 @@ class StreamingInferAdapter:
                 }
             )
         if observation_text:
-            content.append({"type": "text", "text": "[动作观察]\n" + observation_text})
+            # 已带标签的观察（如「[空间观察]」）原样注入，未带标签的按动作观察加前缀。
+            text = observation_text if observation_text.startswith("[") else "[动作观察]\n" + observation_text
+            content.append({"type": "text", "text": text})
         return {"role": "user", "content": content}
 
     def _build_main_internal_messages(
