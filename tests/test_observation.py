@@ -40,6 +40,9 @@ def test_culinary_rules_in_zh_prompt(source: str) -> None:
     assert "菜谱由系统提供" in prompt
     assert "本菜用量" in prompt
     assert "不要增减、替换或换算成别的单位" in prompt
+    # 推荐菜不自报菜名：候选由系统给出（膳食段与通用段各一条）。
+    assert prompt.count("候选菜由系统给出") >= 2
+    assert "等它出现在「[膳食观察]」或「[膳食事件]」里再介绍" in prompt
 
 
 def test_culinary_rules_in_en_prompt(source: str) -> None:
@@ -53,6 +56,9 @@ def test_culinary_rules_in_en_prompt(source: str) -> None:
     assert "the system provides the recipe" in prompt
     assert "本菜用量" in prompt
     assert "never add, drop, substitute, or convert units" in prompt
+    # 推荐菜不自报菜名：候选由系统给出（膳食段与通用段各一条）。
+    assert prompt.count("do not name a dish yourself") >= 2
+    assert 'only after they appear in "[膳食观察]" or "[膳食事件]"' in prompt
 
 
 def test_tagged_observation_passes_through_verbatim(source: str) -> None:
