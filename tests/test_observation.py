@@ -36,6 +36,10 @@ def test_culinary_rules_in_zh_prompt(source: str) -> None:
     assert "只能照抄" in prompt
     assert "不要重复" in prompt
     assert "不要凭外观判断肉类熟透" in prompt
+    # 菜谱由系统提供：未拿到 [膳食观察] 前不自编配料；用量问题据此直答。
+    assert "菜谱由系统提供" in prompt
+    assert "本菜用量" in prompt
+    assert "不要增减、替换或换算成别的单位" in prompt
 
 
 def test_culinary_rules_in_en_prompt(source: str) -> None:
@@ -46,6 +50,9 @@ def test_culinary_rules_in_en_prompt(source: str) -> None:
     assert "requires a spoken reply" in prompt
     assert "verbatim" in prompt
     assert "appearance alone" in prompt
+    assert "the system provides the recipe" in prompt
+    assert "本菜用量" in prompt
+    assert "never add, drop, substitute, or convert units" in prompt
 
 
 def test_tagged_observation_passes_through_verbatim(source: str) -> None:
