@@ -71,3 +71,50 @@ def test_culinary_observation_prefix_is_tagged() -> None:
     """[膳食观察] 前缀触发 startswith("[") 分支——与 adapter 的判断方式一致。"""
     assert "[膳食观察]".startswith("[")
     assert "[膳食事件]".startswith("[")
+# 方案5 规格 md 的并排路径（lemos 仓），找不到时逐字断言降级为关键句断言。
+_SPEC = Path(
+    "D:/Aprojects/subscription/lemos/docs/video/方案5-一期实现规格.md")
+
+
+def _spec_block(marker: str) -> str | None:
+    if not _SPEC.exists():
+        return None
+    import re
+
+    text = _SPEC.read_text(encoding="utf-8")
+    for block in re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL):
+        if marker in block:
+            return block.strip()
+    return None
+
+
+def test_style_rules_in_zh_prompt(source: str) -> None:
+    """化妆模式规则（方案5 §9）在 ZH prompt 里，且与规格逐字一致。"""
+    prompt = _extract_prompt(source, "DEFAULT_SYSTEM_PROMPT_ZH")
+    block = _spec_block("用户屏幕上的妆是系统渲染的虚拟妆")
+    if block is not None:
+        assert block in prompt, "§9 中文块与规格不一致"
+        return
+    assert "美妆模式" in prompt
+    assert "「[造型观察]」" in prompt
+    assert "「[造型事件]」" in prompt
+    assert "必须开口" in prompt
+    assert "色号、品牌或数值" in prompt
+
+
+def test_style_rules_in_en_prompt(source: str) -> None:
+    prompt = _extract_prompt(source, "DEFAULT_SYSTEM_PROMPT_EN")
+    block = _spec_block("The makeup on the user's screen is virtual")
+    if block is not None:
+        assert block in prompt, "§9 英文块与规格不一致"
+        return
+    assert "Makeup mode" in prompt
+    assert '"[造型观察]"' in prompt
+    assert '"[造型事件]"' in prompt
+    assert "requires a spoken reply" in prompt
+
+
+def test_style_observation_prefix_is_tagged() -> None:
+    """[造型观察] / [造型事件] 带前缀 → startswith("[") 原样注入。"""
+    assert "[造型观察]".startswith("[")
+    assert "[造型事件]".startswith("[")
